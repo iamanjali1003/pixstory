@@ -1,138 +1,156 @@
 # pixStory — Architecture & AWS Services
 
-A short explanation of how pixStory is built and which AWS services it uses.
+A short, plain explanation of how pixStory is built, how it is deployed, and
+which AWS services it uses.
+
+**Live app:** http://Pixstory-env-1.eba-55bqi3ks.ap-south-1.elasticbeanstalk.com
 
 ---
 
-## Overview
+## What pixStory is
 
-pixStory is a shared photo gallery. People sign up, upload photos tagged with a
-caption, location, and activity, and browse a public feed where they can search,
-like, and comment. It is a two-part application:
+A shared photo gallery. People sign up, upload photos tagged with a caption,
+location, and activity, and browse a public feed where they can search, like,
+and comment.
 
-- **Frontend** — a React single-page app (Vite + TypeScript), hosted on **AWS Amplify Hosting**.
-- **Backend** — an Express REST API (Node.js + TypeScript), hosted on **AWS Elastic Beanstalk**.
+It is built as **one application with two halves**:
 
-Photos live in **Amazon S3** and are delivered through **Amazon CloudFront**.
-Everything else — accounts, photo metadata, likes, comments — lives in **MongoDB Atlas**.
+- A **React frontend** (the website you see in the browser).
+- A **Node.js + Express backend** (the API that handles accounts, photos, likes,
+  and comments).
+
+Both halves are served from a **single server** on AWS — the Express backend
+serves the built React files *and* answers the API calls. Photos are stored in
+Amazon S3 and delivered through Amazon CloudFront. Accounts and photo details
+live in MongoDB Atlas.
 
 ---
 
 ## Diagram
 
 ```
-                       ┌─────────────────────────┐
-                       │  React SPA (Vite)        │
-                       │  AWS Amplify Hosting     │
-                       └───────────┬─────────────┘
-                                   │  HTTPS, JWT in Authorization header
-                                   ▼
-                       ┌─────────────────────────┐
-                       │  Express API             │
-                       │  AWS Elastic Beanstalk   │
-                       └──┬───────────────────┬───┘
-       presigned PUT URL  │                   │  Mongoose driver
-       (upload) + key      │                   │
-                          ▼                   ▼
-                 ┌──────────────────┐  ┌──────────────────────┐
-                 │  Amazon S3       │  │  MongoDB Atlas        │
-                 │  (private bucket)│  │  users · memories     │
-                 └────────┬─────────┘  └──────────────────────┘
-                          │  Origin Access Control (private read)
-                          ▼
-                 ┌──────────────────┐
-                 │  Amazon CloudFront│ ◄── browser loads images from the CDN
-                 └──────────────────┘
+                         Browser
+                            |
+                            |  http (one address)
+                            v
+        ┌─────────────────────────────────────────┐
+        │   AWS Elastic Beanstalk (one EC2 server) │
+        │                                          │
+        │   Express app:                           │
+        │     • serves the React website (/)       │
+        │     • answers the API   (/api/...)       │
+        └───────────────┬───────────────┬─────────┘
+        presigned upload │               │ Mongoose driver
+                         v               v
+                ┌──────────────┐  ┌──────────────────┐
+                │  Amazon S3   │  │  MongoDB Atlas    │
+                │ (private)    │  │  users · memories │
+                └──────┬───────┘  └──────────────────┘
+                       │ read via Origin Access Control
+                       v
+                ┌──────────────┐
+                │  CloudFront  │  ── browser loads images from the CDN
+                └──────────────┘
 ```
+
+Because the website and the API come from the **same address**, there are no
+cross-origin (CORS) problems and nothing to wire between two separate hosts.
 
 ---
 
-## Key design decision — images never pass through the server
+## How a request flows
 
-The Express server never receives or proxies image bytes. Instead:
+### Loading the site
+1. Browser opens the Elastic Beanstalk URL.
+2. Express returns the built React `index.html` and its JS/CSS files.
+3. React starts up and asks the API for the feed: `GET /api/memories`.
 
-**Upload**
+### Uploading a photo (the photo never passes through the server)
 1. Browser asks the API for an upload slot: `POST /api/memories/upload-url`.
-2. The API returns a **short-lived presigned S3 PUT URL** (valid 5 minutes) scoped to a
-   key under the user's own prefix (`memories/<userId>/<uuid>.<ext>`).
-3. The browser uploads the file **directly to S3** using that URL.
-4. The browser then saves the metadata: `POST /api/memories` with the `s3Key`, caption,
-   location, and activity. The API verifies the key belongs to that user before storing it.
+2. The API returns a **short-lived presigned S3 URL** (valid 5 minutes), scoped
+   to a path under that user only: `memories/<userId>/<random>.<ext>`.
+3. The browser uploads the file **straight to S3** with that URL.
+4. The browser saves the details: `POST /api/memories` with the S3 key, caption,
+   location, and activity. The API checks the key belongs to that user, then
+   stores the record in MongoDB.
 
-**View**
-- The S3 bucket is **private** (all public access blocked). CloudFront reads it through
-  an **Origin Access Control**, and the browser loads every image from the CloudFront CDN
-  URL (`https://<distribution>.cloudfront.net/<s3Key>`).
-
-This keeps the backend small and cheap (no large uploads through it), keeps the bucket
-locked down, and serves images fast from edge caches.
+### Showing a photo
+- The S3 bucket is **private** (no public access). CloudFront reads it through an
+  **Origin Access Control**, and the browser loads each image from the
+  CloudFront address. Fast, cached at the edge, and the bucket stays locked down.
 
 ---
 
 ## AWS services used
 
-| Service | Role in pixStory | Why this service |
+| Service | What it does in pixStory | Why this service |
 |---|---|---|
-| **Amazon S3** | Stores the uploaded image files | Durable, cheap object storage built for binary blobs; supports presigned URLs for direct browser uploads |
-| **Amazon CloudFront** | Serves images to the browser via a global CDN | Caches images at edge locations for fast loads, and lets the S3 bucket stay fully private via Origin Access Control |
-| **AWS Elastic Beanstalk** | Hosts the Express API | One-command deploy of a Node.js app; manages the EC2 instance, load balancer, and logs |
-| **AWS Amplify Hosting** | Hosts the React SPA | Connects to GitHub and auto-builds/deploys on every push; serves the static bundle over HTTPS |
-| **MongoDB Atlas** | Database for users and memories | Managed MongoDB (runs on AWS infrastructure); free tier, flexible document model that fits memories with embedded comments |
-
-> IAM ties it together: a dedicated IAM user grants the backend only the S3 permissions it
-> needs to sign upload URLs.
+| **AWS Elastic Beanstalk** | Hosts the whole app (Express serves the React site + the API) on a single EC2 instance | Uploads a zip and handles the server, networking, and health checks for you — no manual server setup |
+| **Amazon EC2** | The virtual machine that Elastic Beanstalk runs the app on | Managed automatically by Elastic Beanstalk (single `t3.micro`, free-tier) |
+| **Amazon S3** | Stores the uploaded image files | Durable, cheap object storage; supports presigned URLs so the browser uploads directly |
+| **Amazon CloudFront** | Delivers the images over a global CDN | Caches images near the user for fast loads, and lets the S3 bucket stay fully private |
+| **AWS IAM** | A dedicated user gives the backend only the S3 permissions it needs | Least-privilege: the app can sign uploads but nothing more |
+| **MongoDB Atlas** | Database for users and memories (managed MongoDB, runs on AWS) | Free tier, simple document model that fits memories with embedded comments |
 
 ---
 
-## Data model (MongoDB)
+## Data stored (MongoDB)
 
 ```
 User
-  _id, email (unique), passwordHash (bcrypt), name, timestamps
+  email (unique), passwordHash (bcrypt), name, timestamps
 
 Memory
-  _id, userId, userName, s3Key,
+  userId, userName, s3Key,
   caption, location, activity,
-  likes: [userId],                       // a set, so a like toggles idempotently
+  likes:    [userId],                       a set, so a like toggles cleanly
   comments: [{ userId, userName, text, createdAt }],
   timestamps
 ```
 
-A MongoDB **text index** across `caption`, `location`, and `activity` powers the search box.
-Only the `s3Key` (a path string) is stored in MongoDB — never the image bytes.
+A MongoDB **text index** across `caption`, `location`, and `activity` powers the
+search box. Only the `s3Key` (a short path string) is stored — never the image
+bytes themselves.
 
 ---
 
-## Authentication
+## Accounts and security
 
-Email + password. Passwords are hashed with **bcrypt**; the server never stores plaintext.
-On signup/login the API returns a **JWT**, which the SPA stores in `localStorage` and sends
-as `Authorization: Bearer <token>` on later requests. The public feed works without a token;
-uploading, liking, and commenting require one.
-
----
-
-## Scalability notes
-
-- **Stateless API** — no session state on the server, so Elastic Beanstalk can run multiple
-  instances behind its load balancer and scale horizontally.
-- **Direct-to-S3 uploads** — image traffic never touches the API, so upload volume doesn't
-  bottleneck the server.
-- **CDN delivery** — CloudFront absorbs image read traffic at the edge, keeping load off S3
-  and the API.
-- **Managed database** — Atlas handles replication and backups; it can scale up tiers without
-  app changes.
-
-### Production hardening (next steps, out of scope for this build)
-- Move the JWT from `localStorage` to an httpOnly cookie.
-- Generate thumbnails with a Lambda + Sharp pipeline for even lighter image loads.
-- Restrict MongoDB network access to the backend's VPC instead of allow-all.
+- Passwords are hashed with **bcrypt**; the server never stores plain passwords.
+- Sign-in returns a **JWT** that the browser keeps and sends on later requests.
+- Browsing the feed needs no account; uploading, liking, and commenting do.
+- The S3 bucket is private; images are reachable only through CloudFront.
+- AWS keys and the database connection string live in Elastic Beanstalk
+  environment variables, never in the code or the Git repository.
 
 ---
 
-## Repository
+## How it is deployed
 
-- `client/` — React SPA
-- `server/` — Express API
-- `README.md` — full setup and run instructions
-- `SETUP.md` — step-by-step first-time walkthrough (local + AWS)
+1. The React app is built with Vite, configured to call the API on the **same
+   address** it is served from.
+2. The built files are copied into the backend (`server/public`).
+3. The `server/` folder is zipped and uploaded to Elastic Beanstalk.
+4. Elastic Beanstalk installs dependencies, compiles the TypeScript, and starts
+   the server, which then serves both the website and the API.
+
+Environment variables (database URL, JWT secret, AWS keys, S3 bucket, CloudFront
+domain) are set in the Elastic Beanstalk console, so no secrets are ever in the
+codebase.
+
+---
+
+## Scaling thoughts
+
+- **Stateless backend** — no session is kept on the server, so Elastic Beanstalk
+  could run several instances behind a load balancer if traffic grew.
+- **Direct-to-S3 uploads** — image traffic never touches the server, so uploads
+  don't slow it down.
+- **CDN delivery** — CloudFront serves images from the edge, keeping load off the
+  server and S3.
+- **Managed database** — Atlas handles backups and replication and can scale up
+  without code changes.
+
+Possible next steps (not built here): HTTPS via a load balancer or CloudFront in
+front of the app, image thumbnails via a Lambda + Sharp pipeline, and restricting
+the database to the backend's network only.

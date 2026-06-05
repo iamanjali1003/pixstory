@@ -15,7 +15,7 @@ Two things:
 - A **backend** (`server/`) that runs on Node.js. Stores accounts and memories in MongoDB. Talks to AWS S3 to give upload URLs to the browser.
 - A **frontend** (`client/`) that runs in the browser. A React app (shadcn/ui components, lucide icons, grayscale theme) where people sign up, upload photos, and browse the gallery.
 
-They run as two separate processes during development. In production the backend lives on AWS Elastic Beanstalk and the frontend lives on AWS Amplify Hosting.
+They run as two separate processes during development. For the live deployment, the React app is built and bundled into the backend, and the whole thing runs as **one app on AWS Elastic Beanstalk** — the Express server serves the website and answers the API from the same address.
 
 ---
 
@@ -171,14 +171,17 @@ In the top-right corner of the AWS console, pick a region (e.g. `Mumbai (ap-sout
 [
   {
     "AllowedHeaders": ["*"],
-    "AllowedMethods": ["PUT"],
+    "AllowedMethods": ["PUT", "GET"],
     "AllowedOrigins": ["http://localhost:5173"],
     "ExposeHeaders": []
   }
 ]
 ```
 
-> We'll add the Amplify URL to `AllowedOrigins` after we deploy the frontend.
+> This covers local development. Once the app is live on Elastic Beanstalk, the
+> browser uploads from that same Elastic Beanstalk address, so add your live URL
+> (e.g. `http://pixstory-prod.eba-xxxx.ap-south-1.elasticbeanstalk.com`) to
+> `AllowedOrigins` too.
 
 ### Step 2.4 — Create an IAM user (so the backend can talk to S3)
 
@@ -311,143 +314,117 @@ If you see this, **everything works locally**. Time to deploy.
 
 ---
 
-## Part 4 — Deploy to AWS
+## Part 4 — Deploy to AWS (one app on Elastic Beanstalk)
 
-We'll deploy the backend first (Elastic Beanstalk), then the frontend (Amplify Hosting).
+The React app gets built and bundled into the backend, then the whole thing is
+uploaded to Elastic Beanstalk as a single app. The Express server serves the
+website and the API from the same address — so there is no separate frontend
+host and no CORS to configure.
 
-### Step 4.1 — Install the AWS CLI and EB CLI
+### Step 4.1 — Build the frontend for production
 
-```bash
-# AWS CLI (one-time install)
-brew install awscli            # on Mac
-# or follow https://aws.amazon.com/cli/ for Windows/Linux
-
-# EB CLI (one-time install)
-brew install aws-elasticbeanstalk-cli   # on Mac
-# or: pipx install awsebcli
-```
-
-Configure the AWS CLI with the same credentials from Step 2.4:
+The production build must call the API on the **same address** it is served
+from, so `VITE_API_URL` is left empty. There is a `client/.env.production` file
+that already does this (`VITE_API_URL=`). Build the client:
 
 ```bash
-aws configure
-```
-
-It asks for:
-
-- AWS Access Key ID — paste it
-- AWS Secret Access Key — paste it
-- Default region — type the region you picked
-- Default output format — press Enter
-
-### Step 4.2 — Deploy the backend to Elastic Beanstalk
-
-From inside the `server/` folder:
-
-```bash
+cd client
 npm run build
-eb init pixstory --platform "Node.js 22" --region ap-south-1
 ```
 
-When `eb init` asks "Do you want to set up SSH?" — answer **n** (you don't need it).
+**You should see:** `dist/` rebuilt with `index.html` and an `assets/` folder.
+
+### Step 4.2 — Bundle the build into the backend
+
+Copy the built site into the backend's `public/` folder, which the Express
+server serves:
 
 ```bash
-eb create pixstory-prod
+cd ..
+rm -rf server/public
+mkdir -p server/public
+cp -R client/dist/* server/public/
 ```
 
-This takes 5–10 minutes — EB creates an EC2 instance, a load balancer, security groups, and deploys your code.
+### Step 4.3 — Make the deploy zip
 
-**You should see** at the end: `Application available at <some-url>.elasticbeanstalk.com`.
-
-#### Set the environment variables on EB
+Zip the `server/` folder (without `node_modules`, `dist`, or any `.env` files —
+Elastic Beanstalk rebuilds those and the secrets are set in the console):
 
 ```bash
-eb setenv \
-  MONGODB_URI="<same as local>" \
-  JWT_SECRET="<same as local>" \
-  AWS_REGION="ap-south-1" \
-  AWS_ACCESS_KEY_ID="<same as local>" \
-  AWS_SECRET_ACCESS_KEY="<same as local>" \
-  S3_BUCKET="<same as local>" \
-  CLOUDFRONT_DOMAIN="<same as local>" \
-  CORS_ORIGINS="http://localhost:5173"
+cd server
+zip -r ../pixstory-backend-deploy.zip . \
+  -x "node_modules/*" -x "dist/*" -x ".env" -x ".env.local*" -x "*.log" -x ".DS_Store" -x ".elasticbeanstalk/*"
+cd ..
 ```
 
-(We'll add the Amplify URL to `CORS_ORIGINS` once we have it.)
+**You should see:** `pixstory-backend-deploy.zip` created (a little over 100 KB).
+It contains the server source **and** `public/` (the built website).
 
-**Confirm it's alive:**
+### Step 4.4 — Create the Elastic Beanstalk environment (console)
+
+1. AWS console → set region to **Mumbai (ap-south-1)** → search **Elastic Beanstalk** → **Create application**
+2. **Environment tier:** Web server environment
+3. **Application name:** `pixstory`, **Environment name:** `pixstory-prod`
+4. **Platform:** Node.js (Node.js 22+ on Amazon Linux 2023)
+5. **Application code:** Upload your code → choose `pixstory-backend-deploy.zip` → version label `v1`
+6. **Preset:** **Single instance (free tier eligible)** → **Next**
+
+#### Service access (one-time IAM roles)
+
+On a new account both dropdowns are empty. Create the two roles (IAM → Create role):
+
+- **EC2 instance profile** — trusted entity **EC2**, attach `AWSElasticBeanstalkWebTier`, `AWSElasticBeanstalkWorkerTier`, `AWSElasticBeanstalkMulticontainerDocker`. Name it `aws-elasticbeanstalk-ec2-role`.
+- **Service role** — trusted entity **Elastic Beanstalk → Environment**, attach `AWSElasticBeanstalkEnhancedHealth`, `AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy`. Name it `aws-elasticbeanstalk-service-role`.
+
+Back in the wizard, select both roles → **Next**. Skip networking and scaling (defaults).
+
+#### Environment properties (the secrets)
+
+On the **Configure updates, monitoring, and logging** step, add these under
+**Environment properties** (the same values as your `server/.env`):
+
+| Key | Value |
+| --- | --- |
+| `NODE_ENV` | `production` |
+| `JWT_EXPIRES_IN` | `7d` |
+| `AWS_REGION` | `ap-south-1` |
+| `S3_BUCKET` | your bucket name |
+| `CLOUDFRONT_DOMAIN` | your `dXXXX.cloudfront.net` |
+| `CORS_ORIGINS` | `http://localhost:5173` |
+| `MONGODB_URI` | your Atlas connection string |
+| `JWT_SECRET` | your generated secret |
+| `AWS_ACCESS_KEY_ID` | your IAM key |
+| `AWS_SECRET_ACCESS_KEY` | your IAM secret |
+
+> Don't set `PORT` — Elastic Beanstalk provides it automatically.
+
+Click **Create**. It takes ~5–10 minutes to launch the instance, install
+dependencies, compile the TypeScript, and start the server.
+
+**You should see:** Health turn **Ok (green)** and a **Domain** like
+`pixstory-prod.eba-xxxx.ap-south-1.elasticbeanstalk.com`.
+
+> If the very first launch fails with an AutoScaling **internal error (500)**,
+> that is a transient AWS hiccup on new accounts — terminate the environment and
+> create it again, and it goes through.
+
+### Step 4.5 — Confirm it's live
+
+Open the environment URL in your browser — you should see the full pixStory app.
+Then check the API directly:
 
 ```bash
-curl https://<your-eb-url>.elasticbeanstalk.com/health
+curl http://<your-eb-url>.elasticbeanstalk.com/health
 ```
 
 **You should see:** `{"ok":true,"env":"production"}`.
 
-### Step 4.3 — Deploy the frontend to AWS Amplify Hosting
+### Redeploying after a change
 
-1. AWS console → search **Amplify** → **Host web app**
-2. Choose **GitHub** → authorize Amplify
-3. Pick the **iamanjali1003/pixstory** repo, branch **main**
-4. **Monorepo settings**: turn ON, set **App root** to `client`
-5. Amplify auto-detects Vite. Build settings will be:
-   ```yaml
-   frontend:
-     phases:
-       preBuild:
-         commands:
-           - npm ci
-       build:
-         commands:
-           - npm run build
-     artifacts:
-       baseDirectory: dist
-       files:
-         - "**/*"
-   ```
-6. **Environment variables**: add one:
-   - Key: `VITE_API_URL`
-   - Value: `https://<your-eb-url>.elasticbeanstalk.com` (from Step 4.2)
-7. **Save and deploy**
-
-Takes 3–5 minutes for the first build.
-
-**You should see:** the Amplify console showing **Provision → Build → Deploy → Verify** all green, plus a URL like `https://main.dXXXXXXX.amplifyapp.com`.
-
-### Step 4.4 — Wire up CORS so the deployed frontend can talk to everything
-
-Two things to update with the Amplify URL:
-
-**A. Backend `CORS_ORIGINS` on Elastic Beanstalk:**
-
-```bash
-eb setenv CORS_ORIGINS="http://localhost:5173,https://main.dXXXXXXX.amplifyapp.com"
-```
-
-**B. S3 bucket CORS rule:**
-
-Go to S3 → your bucket → **Permissions** → **CORS** → **Edit**. Add the Amplify URL to `AllowedOrigins`:
-
-```json
-[
-  {
-    "AllowedHeaders": ["*"],
-    "AllowedMethods": ["PUT"],
-    "AllowedOrigins": [
-      "http://localhost:5173",
-      "https://main.dXXXXXXX.amplifyapp.com"
-    ],
-    "ExposeHeaders": []
-  }
-]
-```
-
-### Step 4.5 — Final test on the live site
-
-1. Open `https://main.dXXXXXXX.amplifyapp.com` (the Amplify URL)
-2. Sign up, upload a photo, like it, comment on it
-3. Same checkpoint as Step 3.4 — image src should be `cloudfront.net`
-
-**You should see:** the entire flow works end-to-end on the deployed site.
+When you change code later, repeat 4.1 → 4.3 to rebuild the zip, then in the
+Elastic Beanstalk console use **Upload and deploy** to push the new zip. The
+environment variables stay set, so it comes back up green on its own.
 
 ---
 
@@ -456,15 +433,15 @@ Go to S3 → your bucket → **Permissions** → **CORS** → **Edit**. Add the 
 Before sharing the project:
 
 - [ ] **GitHub repo** at `github.com/iamanjali1003/pixstory` is public and pushed up to date
-- [ ] **README.md** at the repo root reads well
-- [ ] **Amplify URL** loads the gallery in under 3 seconds
-- [ ] On Amplify, you can **sign up → upload → see image on gallery**
-- [ ] In DevTools → Network, image `<img>` requests go to **cloudfront.net** (not s3.amazonaws.com)
-- [ ] **Search** filters the gallery (type a caption fragment in the search box)
-- [ ] **Like** button toggles on/off after login
-- [ ] **Comment** form posts a comment that appears immediately
-- [ ] **Backend health check** at `https://<eb-url>/health` returns `{"ok":true}`
-- [ ] Upload at least one demo photo so reviewers see something on first load
+- [ ] **README.md** reads well and includes the live URL
+- [ ] **Live URL** loads the gallery in the browser
+- [ ] You can **sign up → upload → see the image in the gallery** on the live site
+- [ ] In DevTools → Network, image requests go to **cloudfront.net** (not s3.amazonaws.com)
+- [ ] **Search** filters the gallery (type a caption fragment)
+- [ ] **Like** toggles on/off after login
+- [ ] **Comment** posts and appears immediately
+- [ ] **Health check** at `<live-url>/health` returns `{"ok":true}`
+- [ ] At least one demo photo uploaded so reviewers see something on first load
 
 ---
 
@@ -476,11 +453,11 @@ Before sharing the project:
 | `MongoServerError: bad auth`                                           | Wrong password in `MONGODB_URI`, or you forgot to create a database user | Atlas → **Database Access** → create user, paste password into the URI   |
 | Backend starts but can't connect: `serverSelectionTimeout`             | Your IP isn't allowlisted in Atlas                                       | Atlas → **Network Access** → Add `0.0.0.0/0`                             |
 | Image upload fails with `SignatureDoesNotMatch`                        | The browser sent a different `Content-Type` than the one we signed       | The code already handles this — if it happens, hard-refresh the browser  |
-| Image upload fails with `CORS error` in browser console                | S3 bucket CORS rule doesn't include your origin                          | Step 2.3 (for local) or Step 4.4 (for Amplify)                           |
-| Gallery loads but images are broken                                    | CloudFront isn't done deploying, or bucket policy wasn't pasted          | Wait 5 more minutes; re-paste the CloudFront-generated bucket policy     |
-| `eb deploy` fails with `Procfile is missing`                           | Building from the wrong folder                                           | Run `eb deploy` from inside `server/`, not the repo root                 |
-| Amplify build fails on `npm ci`                                        | Monorepo app root not set to `client`                                    | Amplify → App settings → Build settings → set base directory to `client` |
-| Live site shows "Network error" on signup                              | Backend CORS doesn't include the Amplify URL                             | Step 4.4-A                                                               |
+| Image upload fails with `CORS error` in browser console                | S3 bucket CORS rule doesn't include your origin                          | Step 2.3 — add your origin to the bucket CORS rule                       |
+| Gallery loads but images are broken                                    | CloudFront isn't done deploying, or bucket policy wasn't applied          | Wait 5 more minutes; recreate the distribution with the "recommended" OAC option |
+| Deployed site shows a blank page                                       | The build wasn't copied into `server/public` before zipping              | Redo Steps 4.1 → 4.3, then Upload and deploy                            |
+| Elastic Beanstalk health is red after deploy                           | Environment variables missing, or Mongo IP not allowlisted               | Check Environment properties (Step 4.4) and Atlas Network Access (`0.0.0.0/0`) |
+| First environment launch fails with an AutoScaling 500                 | Transient AWS error on new accounts                                      | Terminate the environment and create it again                           |
 
 ---
 
@@ -505,15 +482,14 @@ The repo name, S3 bucket name, MongoDB cluster name, and Elastic Beanstalk envir
 
 ## Where things live (so you can find them again)
 
-| What                 | Where                                                   |
-| -------------------- | ------------------------------------------------------- |
-| Source code          | this Git repo                                           |
-| Database             | MongoDB Atlas → cluster `pixstory-cluster`              |
-| Uploaded images      | AWS S3 → bucket `pixstory-uploads-...`                  |
-| Image delivery (CDN) | AWS CloudFront → distribution `dXXXXXXX.cloudfront.net` |
-| Backend server       | AWS Elastic Beanstalk → environment `pixstory-prod`     |
-| Frontend website     | AWS Amplify Hosting → app `pixstory`                    |
-| Backend logs         | EB console → Logs → Request Logs → Last 100 Lines       |
-| Frontend build logs  | Amplify console → your app → the build that just ran    |
+| What                  | Where                                                   |
+| --------------------- | ------------------------------------------------------- |
+| Source code           | this Git repo                                           |
+| Database              | MongoDB Atlas → cluster `pixstory-cluster`              |
+| Uploaded images       | AWS S3 → bucket `pixstory-uploads...`                   |
+| Image delivery (CDN)  | AWS CloudFront → distribution `dXXXXXXX.cloudfront.net` |
+| The whole app (site + API) | AWS Elastic Beanstalk → environment `pixstory-prod`  |
+| The server it runs on | Amazon EC2 (one `t3.micro`, created by Elastic Beanstalk) |
+| App logs              | Elastic Beanstalk console → Logs → Request Logs → Last 100 Lines |
 
 That's the whole map.
