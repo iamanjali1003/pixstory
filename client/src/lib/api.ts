@@ -10,7 +10,7 @@
 
 import { auth } from './auth';
 
-const BASE_URL = import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://localhost:4000';
+const BASE_URL = import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? 'http://localhost:4000';
 
 export interface Comment {
   id: string;
