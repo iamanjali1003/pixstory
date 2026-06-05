@@ -3,6 +3,7 @@
  * ---------------------------------------------------------------------------
  * Entry point for the pixstory backend. Wires together:
  *   - JSON body parser + CORS
+ *   - /                   root response so platform health checks pass
  *   - /health             liveness probe used by Elastic Beanstalk
  *   - /api/auth           signup / login
  *   - /api/memories       feed, upload-url, create, like, comment
@@ -33,6 +34,10 @@ async function main(): Promise<void> {
     })
   );
   app.use(express.json({ limit: '1mb' }));
+
+  app.get('/', (_req, res) => {
+    res.json({ service: 'pixstory-api', status: 'ok' });
+  });
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, env: env.nodeEnv });
