@@ -2,7 +2,7 @@
 
 A shared photo gallery for trips, workshops and the everyday moments worth remembering.
 
-[Live](http://Pixstory-env-1.eba-55bqi3ks.ap-south-1.elasticbeanstalk.com) · [Architecture](ARCHITECTURE.md) · [Setup guide](SETUP.md)
+[Architecture](ARCHITECTURE.md) · [Setup guide](SETUP.md)
 
 ## Overview
 
