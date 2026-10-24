@@ -1,19 +1,29 @@
-# pixStory
+![pixStory](.github/banner.png)
 
-> A shared photo gallery for trips, workshops, and the everyday moments worth remembering.
+A shared photo gallery for trips, workshops and the everyday moments worth remembering.
 
-**Live app:** http://Pixstory-env-1.eba-55bqi3ks.ap-south-1.elasticbeanstalk.com
+[Live](http://Pixstory-env-1.eba-55bqi3ks.ap-south-1.elasticbeanstalk.com) · [Architecture](ARCHITECTURE.md) · [Setup guide](SETUP.md)
 
-pixStory lets people sign up, upload photos with a caption, location, and activity tag, and browse a public feed of everyone's memories. Likes, comments, and full-text search are built in. The React frontend and the Express API are served together from a single server on AWS Elastic Beanstalk; images are stored in Amazon S3 and delivered through CloudFront; accounts and memories live in MongoDB Atlas.
+## Overview
 
-**[ARCHITECTURE.md](./ARCHITECTURE.md)** — short explanation of the architecture and the AWS services used.
-**[SETUP.md](./SETUP.md)** — step-by-step first-time walkthrough (local run + AWS deploy).
+People sign up, upload photos with a caption, location and activity tag, and
+browse a public feed of everyone's memories. The React frontend and the Express
+API are served together from one server on AWS Elastic Beanstalk. Images are
+stored in Amazon S3 and delivered through CloudFront; accounts and memories live
+in MongoDB Atlas.
 
----
+## Features
+
+- Email and password accounts, with bcrypt-hashed passwords and JWT sessions
+- Uploads go straight from the browser to S3 through a presigned URL, so image bytes never pass through the server
+- Images are served by CloudFront from a private bucket that only CloudFront can read
+- A public feed, newest first, with likes and comments
+- Full-text search across caption, location and activity
+- One deployment: the website and the API share an address, so there is no CORS to configure
 
 ## Tech stack
 
-| Layer | Choice |
+| Area | Choice |
 | --- | --- |
 | Frontend | React 19, Vite 6, TypeScript, TailwindCSS v4 |
 | UI components | shadcn/ui (Button, Input, Label, Card, Badge, Textarea) |
@@ -28,9 +38,7 @@ pixStory lets people sign up, upload photos with a caption, location, and activi
 
 The colour palette is strict grayscale; all design tokens live as CSS variables in `client/src/index.css`.
 
----
-
-## How it fits together
+## How it works
 
 ```
               Browser
@@ -49,36 +57,10 @@ The colour palette is strict grayscale; all design tokens live as CSS variables 
           Amazon CloudFront  ->  browser loads images from the CDN
 ```
 
-The website and the API are served from the **same address**, so there is no CORS to configure. The Express server serves the compiled React app for any non-API route, and handles `/api/...` itself. Full detail in [ARCHITECTURE.md](./ARCHITECTURE.md).
+The Express server serves the compiled React app for any non-API route and
+handles `/api/...` itself. Full detail is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
----
-
-## Repo layout
-
-```
-pixstory/
-├── client/            # React app (Vite)
-│   └── src/
-│       ├── pages/         # Gallery, Upload, Login, Signup
-│       ├── components/    # Navbar, MemoryCard, ProtectedRoute, ui/ (shadcn)
-│       └── lib/           # api client, auth store, site.config, helpers
-├── server/            # Express API + serves the built React app
-│   └── src/
-│       ├── routes/        # auth, memories
-│       ├── models/        # User, Memory (Mongoose)
-│       ├── middleware/    # auth, error handling
-│       ├── lib/           # env, db, s3, jwt helpers
-│       └── index.ts       # bootstrap: static site + API + DB
-├── README.md
-├── ARCHITECTURE.md    # architecture & AWS services
-└── SETUP.md           # step-by-step setup guide
-```
-
-Every source file starts with a short header comment explaining what it does.
-
----
-
-## Run it locally
+## Getting started
 
 You need **Node.js 22+**, a **MongoDB Atlas** connection string, and (for image upload to work) an **AWS S3 bucket + CloudFront + IAM keys**. The full walkthrough is in [SETUP.md](./SETUP.md); the short version:
 
@@ -102,11 +84,9 @@ npm run dev                 # http://localhost:5173
 
 Open http://localhost:5173.
 
----
+### Environment variables
 
-## Environment variables
-
-### `server/.env`
+#### `server/.env`
 
 | Key | Purpose |
 | --- | --- |
@@ -120,7 +100,7 @@ Open http://localhost:5173.
 | `CLOUDFRONT_DOMAIN` | CloudFront domain that serves images, e.g. `d111abc.cloudfront.net`. |
 | `CORS_ORIGINS` | Allowed origins for local dev, e.g. `http://localhost:5173`. |
 
-### `client/.env.local`
+#### `client/.env.local`
 
 | Key | Purpose |
 | --- | --- |
@@ -128,9 +108,7 @@ Open http://localhost:5173.
 
 > `.env` files are gitignored. Secrets are never committed; in production they are set in the Elastic Beanstalk console.
 
----
-
-## Deploying
+## Deployment
 
 The frontend is built and bundled into the backend, and the whole thing is deployed to Elastic Beanstalk as one app. Step-by-step (Atlas, S3, CloudFront, IAM, Elastic Beanstalk) is in [SETUP.md](./SETUP.md). In short:
 
@@ -140,8 +118,6 @@ The frontend is built and bundled into the backend, and the whole thing is deplo
 4. Set the environment variables (above) in the Elastic Beanstalk console.
 
 Elastic Beanstalk installs dependencies, compiles the TypeScript, and starts the server, which serves both the website and the API.
-
----
 
 ## API reference
 
@@ -159,11 +135,10 @@ All endpoints return JSON. Authenticated endpoints expect `Authorization: Bearer
 
 `GET /health` is a liveness probe used by Elastic Beanstalk.
 
----
-
 ## Scripts
 
 ### `server/`
+
 | Script | What it does |
 | --- | --- |
 | `npm run dev` | Start the API with auto-reload. |
@@ -172,6 +147,7 @@ All endpoints return JSON. Authenticated endpoints expect `Authorization: Bearer
 | `npm run typecheck` | Type-check only. |
 
 ### `client/`
+
 | Script | What it does |
 | --- | --- |
 | `npm run dev` | Vite dev server on http://localhost:5173. |
@@ -179,14 +155,35 @@ All endpoints return JSON. Authenticated endpoints expect `Authorization: Bearer
 | `npm run preview` | Serve the production build locally. |
 | `npm run typecheck` | Type-check only. |
 
----
+## Project structure
 
-## Customizing the brand
+```
+pixstory/
+├── client/            # React app (Vite)
+│   └── src/
+│       ├── pages/         # Gallery, Upload, Login, Signup
+│       ├── components/    # Navbar, MemoryCard, ProtectedRoute, ui/ (shadcn)
+│       └── lib/           # api client, auth store, site.config, helpers
+├── server/            # Express API + serves the built React app
+│   └── src/
+│       ├── routes/        # auth, memories
+│       ├── models/        # User, Memory (Mongoose)
+│       ├── middleware/    # auth, error handling
+│       ├── lib/           # env, db, s3, jwt helpers
+│       └── index.ts       # bootstrap: static site + API + DB
+├── README.md
+├── ARCHITECTURE.md    # architecture & AWS services
+└── SETUP.md           # step-by-step setup guide
+```
 
-Everything brand-related (name, tagline, logo icon, social preview) lives in one file: `client/src/lib/site.config.ts`. The colour palette lives in `client/src/index.css`. See [SETUP.md](./SETUP.md) for the full table.
+Every source file starts with a short header comment explaining what it does.
 
----
+## Configuration
+
+Everything brand-related (name, tagline, logo icon, social preview) lives in one
+file, `client/src/lib/site.config.ts`. The colour palette lives in
+`client/src/index.css`. See [SETUP.md](SETUP.md) for the full table.
 
 ## License
 
-MIT — see `LICENSE`.
+[MIT](LICENSE) © 2026 [Anjali](https://iamanjali1003.github.io)
