@@ -14,6 +14,10 @@
  * that came back from /upload-url. POST / enforces that the supplied s3Key
  * lives under the caller's own per-user prefix (`memories/<userId>/`) so
  * one user cannot register another user's object as their own memory.
+ *
+ * Liking is a single atomic update ($addToSet to like, $pull to unlike)
+ * rather than read, edit, save: two people liking the same memory at once
+ * would otherwise overwrite each other's change.
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -114,20 +118,18 @@ router.post('/:id/like', requireAuth, async (req: Request, res: Response) => {
     res.status(400).json({ error: 'Invalid memory id' });
     return;
   }
-  const memory = await Memory.findById(memoryId);
+  const userObjectId = new Types.ObjectId(req.user!.userId);
+  const alreadyLiked = await Memory.exists({ _id: memoryId, likes: userObjectId });
+  const memory = await Memory.findByIdAndUpdate(
+    memoryId,
+    alreadyLiked ? { $pull: { likes: userObjectId } } : { $addToSet: { likes: userObjectId } },
+    { new: true }
+  ).lean();
   if (!memory) {
     res.status(404).json({ error: 'Memory not found' });
     return;
   }
-  const userObjectId = new Types.ObjectId(req.user!.userId);
-  const alreadyLiked = memory.likes.some((id) => String(id) === req.user!.userId);
-  if (alreadyLiked) {
-    memory.likes = memory.likes.filter((id) => String(id) !== req.user!.userId);
-  } else {
-    memory.likes.push(userObjectId);
-  }
-  await memory.save();
-  res.json({ memory: serializeMemory(memory.toObject(), req.user!.userId) });
+  res.json({ memory: serializeMemory(memory, req.user!.userId) });
 });
 
 router.post('/:id/comments', requireAuth, async (req: Request, res: Response) => {
