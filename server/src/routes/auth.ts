@@ -16,13 +16,13 @@ import { signAuthToken } from '../lib/jwt';
 const router = Router();
 
 const signupSchema = z.object({
-  email: z.string().email(),
+  email: z.email(),
   password: z.string().min(8).max(72),
   name: z.string().min(1).max(60),
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  email: z.email(),
   password: z.string().min(1),
 });
 
